@@ -1,0 +1,16 @@
+# личное и служебное — не в открытый репозиторий
+CLAUDE.md
+publish.py
+
+# сборки и большие бинарники (ffmpeg качает tools/get-ffmpeg.ps1)
+bin/
+dist/
+build/dist/
+build/work/
+build/*.spec
+build/skrin.ico
+site/img/_tmp/
+
+__pycache__/
+*.pyc
+*.log
