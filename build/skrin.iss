@@ -44,8 +44,9 @@ Name: "{userprograms}\Скрин — настройки"; Filename: "{app}\Skrin
 Name: "{userdesktop}\Скрин"; Filename: "{app}\Skrin.exe"; Tasks: desktopicon
 
 [Registry]
-; Windows 11 по PrtScn открывает «Ножницы» — отдать клавишу Скрину (при удалении — вернуть как было у Windows)
-Root: HKCU; Subkey: "Control Panel\Keyboard"; ValueType: dword; ValueName: "PrintScreenKeyForSnippingEnabled"; ValueData: 0; Tasks: prtscn; Flags: uninsdeletevalue
+; Windows 11 по PrtScn открывает «Ножницы» — отдать клавишу Скрину. При удалении НЕ стираем: значение 0 мог
+; поставить и сам человек (или другая программа скриншотов), стирание вернуло бы «Ножницы» без спроса.
+Root: HKCU; Subkey: "Control Panel\Keyboard"; ValueType: dword; ValueName: "PrintScreenKeyForSnippingEnabled"; ValueData: 0; Tasks: prtscn
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Skrin"; ValueData: """{app}\Skrin.exe"""; Tasks: autostart
 ; при удалении убрать автозапуск, даже если его включали из настроек программы
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Skrin"; Flags: uninsdeletevalue
