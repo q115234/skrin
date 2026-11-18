@@ -1,5 +1,6 @@
 """Окно настроек «Скрина»."""
 import copy
+import logging
 import math
 import os
 import sys
@@ -9,13 +10,16 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QIcon
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton,
                                QRadioButton, QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
 import config
+import yandex
 from audio import LevelMeter
 from config import (MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, hotkey_text, px)
+
+log = logging.getLogger("skrin")
 
 _MOD_VKS = {0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
 
@@ -99,7 +103,7 @@ class SettingsWindow(QWidget):
             hello.setWordWrap(True)
             hello.setStyleSheet("background: #e8f2ff; border: 1px solid #b5d4ff; border-radius: 6px; padding: 8px;")
             root.addWidget(hello)
-        tabs = QTabWidget()
+        tabs = self.tabs = QTabWidget()
         tabs.addTab(self._tab_main(), "Основное")
         tabs.addTab(self._tab_keys(), "Клавиши")
         tabs.addTab(self._tab_video(), "Видео")
@@ -257,12 +261,27 @@ class SettingsWindow(QWidget):
             note.setStyleSheet("color: #777;")
             lay.addWidget(note)
 
+        self.ya = None
+        if yandex.installed():
+            self.ya_was_off = not yandex.hotkeys_on()
+            self.ya = QCheckBox("Выключить скриншоты Яндекс Браузера по горячим клавишам "
+                                "(иначе по PrtScn снимают и «Скрин», и браузер)")
+            self.ya.setChecked(self.ya_was_off)
+            lay.addWidget(self.ya)
+            if yandex.prtscn_conflict():
+                warn = QLabel("⚠ Сейчас Яндекс Браузер тоже делает скриншот по PrtScn.")
+                warn.setStyleSheet("color: #b45309;")
+                lay.addWidget(warn)
+            note = QLabel("Если браузер открыт, «Скрин» перезапустит его — открытые вкладки вернутся.")
+            note.setStyleSheet("color: #777;")
+            lay.addWidget(note)
+
         help_ = QLabel(
             "<b>В окне скриншота:</b><br>"
             "Ctrl+C или Enter — в буфер и в папку · Ctrl+S — сохранить как · Esc — закрыть<br>"
             "Ctrl+Z / Ctrl+Y — отменить / вернуть · колесо мыши — толщина · 1–8 — цвет<br>"
             "A стрелка · L линия · R прямоугольник · E овал · P карандаш · M маркер · T текст · N номер · "
-            "B размытие · V видео этой области<br>Shift при рисовании — ровно 45° / квадрат / круг · "
+            "B размытие · V видео этой области · O открыть в окне редактора<br>Shift при рисовании — ровно 45° / квадрат / круг · "
             "Delete — удалить выбранную пометку")
         help_.setWordWrap(True)
         help_.setStyleSheet("color: #444;")
@@ -377,7 +396,8 @@ class SettingsWindow(QWidget):
         w = QWidget()
         lay = QVBoxLayout(w)
         t = QLabel(f"<h2>Скрин {config.VERSION}</h2>"
-                   "Скриншоты области с пометками и запись видео экрана со звуком.<br><br>"
+                   "Скриншоты области с пометками и запись видео экрана со звуком.<br>"
+                   "Авторы: Website18 и 7xz7.<br><br>"
                    f"Программа: {config.APP_DIR}<br>Настройки и журнал: {config.DATA}")
         t.setTextInteractionFlags(Qt.TextSelectableByMouse)
         t.setWordWrap(True)
@@ -557,9 +577,42 @@ class SettingsWindow(QWidget):
                     config.set_snipping_on_prtscn(not want_off)
                 except Exception:
                     pass
+        if self.ya is not None and self.ya.isChecked() != self.ya_was_off:
+            if not self._apply_yandex(self.ya.isChecked()):
+                return
         self.app.apply_settings(self.c, self.autostart.isChecked())
         self.saved = True
         self.close()
+
+    def _apply_yandex(self, off):
+        """Галочка «выключить скриншоты Яндекс Браузера». False — пользователь передумал, окно не закрывать."""
+        what = "выключить" if off else "снова включить"
+        try:
+            if yandex.running():
+                box = QMessageBox(QMessageBox.Question, "Скрин",
+                                  f"Чтобы {what} скриншоты Яндекс Браузера, его нужно перезапустить.\n"
+                                  "Открытые вкладки вернутся. Перезапустить браузер сейчас?", parent=self)
+                yes = box.addButton("Перезапустить", QMessageBox.AcceptRole)
+                box.addButton("Отмена", QMessageBox.RejectRole)
+                box.setDefaultButton(yes)
+                box.exec()
+                if box.clickedButton() is not yes:
+                    self.ya.setChecked(self.ya_was_off)
+                    return False
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                ok = yandex.restart_with_hotkeys(not off)
+            finally:
+                QApplication.restoreOverrideCursor()
+        except Exception:
+            log.exception("Яндекс Браузер")
+            ok = False
+        if not ok:
+            QMessageBox.warning(self, "Скрин", "Не получилось поменять настройку Яндекс Браузера.\n"
+                                "Можно вручную: в браузере Настройки → Инструменты → Скриншоты → "
+                                "«Использовать горячие клавиши».")
+            return False
+        return True
 
     def closeEvent(self, e):
         for m in self.meters.values():

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, Q
 
 import config
 import winapi
+import yandex
 from config import hotkey_text, px
 from editor import EditorWindow, load_image
 from overlay import Overlay
@@ -211,7 +212,7 @@ class App(QObject):
         self.hk_failed_names = []
         self.support = None
         self.update_info = None
-        self.msg_kind = ""  # что открыть по щелчку на уведомлении: video | update
+        self.msg_kind = ""  # что открыть по щелчку на уведомлении: video | update | yandex
         self.progress_dlg = None
 
         self.updater = Updater()
@@ -266,6 +267,22 @@ class App(QObject):
         self.update_timer.timeout.connect(self.auto_check_update)
         self.update_timer.start(6 * 3600 * 1000)
         QTimer.singleShot(30_000, self.auto_check_update)
+        QTimer.singleShot(5_000, self.check_yandex)
+
+    # ---------- Яндекс Браузер тоже снимает по PrtScn ----------
+    def check_yandex(self):
+        try:
+            uses_prtscn = config.VK_SNAPSHOT in (self.cfg["hk_shot"][1], self.cfg["hk_video"][1])
+            if not uses_prtscn or not yandex.prtscn_conflict():
+                return
+        except Exception:
+            log.exception("проверка Яндекс Браузера")
+            return
+        log.warning("Яндекс Браузер тоже делает скриншоты по PrtScn")
+        self.msg_kind = "yandex"
+        self.tray.showMessage("Яндекс Браузер тоже делает скриншоты по PrtScn",
+                              "Поэтому по одному нажатию снимают обе программы. Щелкните здесь, чтобы выключить "
+                              "это в браузере (Настройки → Клавиши).", QSystemTrayIcon.Warning, 15000)
 
     # ---------- обновления ----------
     def auto_check_update(self):
@@ -609,6 +626,10 @@ class App(QObject):
     def on_message_clicked(self):
         if self.msg_kind == "update":
             self.ask_update()
+        elif self.msg_kind == "yandex":
+            self.open_settings()
+            if self.settings is not None:
+                self.settings.tabs.setCurrentIndex(1)  # «Клавиши»
         elif self.last_video and Path(self.last_video).exists():
             show_in_folder(self.last_video)
 

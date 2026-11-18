@@ -32,6 +32,9 @@ No sign-up, no ads, no paid features. Your files stay on your computer.
 - 8 colors, 4 sizes (mouse wheel — even for the annotation you just drew), Shift — exact 45° / square / circle.
 - Move, recolor and delete annotations; unlimited undo/redo (Ctrl+Z / Ctrl+Y).
 - Ctrl+C or Enter — copy to clipboard + save PNG/JPG to a folder; Ctrl+S — "Save as…".
+- **Editor window** ("Open in editor" button or O): the screenshot in a normal window — keep it next to your work,
+  "always on top", zoom, the same annotations, Ctrl+C without closing. Can open right after selecting (settings),
+  an image file or the clipboard (tray menu).
 
 **Video**
 - Area, window or full monitor; system audio and microphone with separate volume.
@@ -60,7 +63,12 @@ No sign-up, no ads, no paid features. Your files stay on your computer.
 | A L R E P M T N B | arrow, line, rectangle, ellipse, pen, highlighter, text, number, blur |
 | 1–8 · mouse wheel | color · size |
 | V | record video of the selected area |
+| O | open the selection in the editor window |
+| Ctrl+wheel · Ctrl+0 · Ctrl+1 | in the editor: zoom · fit to window · 100 % |
 | Esc | close |
+
+Yandex Browser can also take screenshots on PrtScn, so both apps react to one key press. Skrin warns about it,
+and a checkbox in Settings → Hotkeys turns the browser's hotkeys off.
 
 ## What the app sends over the internet
 
@@ -101,6 +109,11 @@ Your own build will check for updates and send support messages to website18.ru 
 | [winapi.py](winapi.py) | RegisterHotKey, window list, DXGI outputs, hiding the recording frame from capture |
 | [build.ps1](build.ps1) · [build/skrin.iss](build/skrin.iss) | PyInstaller build + Inno Setup installer |
 | [site/support.php](site/support.php) | server-side support message handler |
+
+## Authors
+
+- [Website18](https://website18.ru) ([@q115234](https://github.com/q115234)) — the app;
+- [@7xz7](https://github.com/7xz7) — editor window, clearer blur tool.
 
 ## Contributing
 
