@@ -18,7 +18,8 @@ COLORS = ["#ff2a2a", "#ff9500", "#ffd60a", "#22c55e", "#2f80ff", "#a855f7", "#11
 TOOL_NAMES = {
     "arrow": ("Стрелка", "A"), "line": ("Линия", "L"), "rect": ("Прямоугольник", "R"),
     "ellipse": ("Овал", "E"), "pen": ("Карандаш", "P"), "marker": ("Маркер", "M"),
-    "text": ("Текст", "T"), "number": ("Номер 1, 2, 3…", "N"), "blur": ("Размытие", "B"),
+    "text": ("Текст", "T"), "number": ("Номер 1, 2, 3…", "N"),
+    "blur": ("Размытие — спрятать почту, телефон, пароль: обведите область", "B"),
 }
 TOOL_VK = {0x41: "arrow", 0x4C: "line", 0x52: "rect", 0x45: "ellipse", 0x50: "pen",
            0x4D: "marker", 0x54: "text", 0x4E: "number", 0x42: "blur"}
@@ -85,13 +86,48 @@ def tool_icon(kind):
         p.drawText(pm.rect(), Qt.AlignCenter, "A")
     elif kind == "number":
         draw_shape(p, Shape("number", "#ff2a2a", 7 if px(21) <= 22 else 4, [(24, 24)], num=1))
-    elif kind == "blur":
-        for i in range(4):
-            for j in range(4):
-                v = 90 + ((i * 3 + j * 5) % 4) * 45
-                p.fillRect(8 + i * 8, 8 + j * 8, 8, 8, QColor(v, v, v))
+    elif kind == "blur":  # картинка: левая половина чёткая, правая — та же, но мозаикой
+        pic = QImage(36, 28, QImage.Format_ARGB32)
+        pic.fill(QColor("#8fd0ff"))  # небо
+        q = QPainter(pic)
+        q.setRenderHint(QPainter.Antialiasing)
+        q.setPen(Qt.NoPen)
+        q.setBrush(QColor("#ffd60a"))
+        q.drawEllipse(QPointF(27, 8), 5, 5)  # солнце — на размытой половине
+        q.setBrush(QColor("#22a559"))
+        q.drawPolygon([QPointF(-2, 29), QPointF(11, 11), QPointF(21, 22), QPointF(28, 15),
+                       QPointF(38, 29)])  # горы через обе половины
+        q.end()
+        x0, y0 = 6, 10
+        p.drawImage(x0, y0, pic)
+        half = pic.copy(18, 0, 18, 28)
+        p.drawImage(x0 + 18, y0, half.scaled(4, 5, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                    .scaled(18, 28, Qt.IgnoreAspectRatio, Qt.FastTransformation))
+        p.setPen(QPen(QColor(c), 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(x0 - 1, y0 - 1, 38, 30))
+        p.setPen(QPen(QColor("#0a84ff"), 2.5))
+        p.drawLine(QPointF(x0 + 18, y0 - 4), QPointF(x0 + 18, y0 + 32))  # граница чёткого и размытого
     p.end()
     return QIcon(pm)
+
+
+def blur_frames(p, shapes):
+    """Пунктирная рамка вокруг размытий — только на экране, в готовую картинку не попадает.
+    Без неё на однотонном фоне размытие не видно и непонятно, какую область оно закрывает."""
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing, False)
+    p.setBrush(Qt.NoBrush)
+    for s in shapes:
+        if s is None or s.kind != "blur" or len(s.pts) < 2:
+            continue
+        r = QRectF(QPointF(*s.pts[0]), QPointF(*s.pts[-1])).normalized()
+        for color, style in ((QColor(0, 0, 0, 170), Qt.SolidLine), (QColor(255, 255, 255, 240), Qt.DashLine)):
+            pen = QPen(color, 1, style)
+            pen.setCosmetic(True)
+            p.setPen(pen)
+            p.drawRect(r)
+    p.restore()
 
 
 def color_icon(color, size_px=None):
@@ -857,6 +893,7 @@ class Overlay(QWidget):
                 draw_shape(p, s, self.base)
             if self.current is not None:
                 draw_shape(p, self.current, self.base)
+            blur_frames(p, self.shapes + [self.current])
             p.restore()
             p.setRenderHint(QPainter.Antialiasing, False)
             target = self.editor.shape if self.editor else self.selected
