@@ -5,8 +5,8 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetricsF, QGuiApplication, QIcon, QImage, QPainter,
-                           QPen, QPixmap, QRegion)
+from PySide6.QtGui import (QColor, QCursor, QFont, QFontDatabase, QFontMetricsF, QGuiApplication, QIcon, QImage,
+                           QPainter, QPen, QPixmap, QRegion)
 from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QPlainTextEdit, QToolButton, QWidget)
 
 import winapi
@@ -44,8 +44,10 @@ def glyph_icon(code, color="#f0f0f0", size=20):
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
+    # «Segoe Fluent Icons» есть только в Windows 11; без неё QFont подставляет обычный шрифт,
+    # у которого в той же области кодов бывают свои знаки — поэтому проверяем само семейство
     f = QFont("Segoe Fluent Icons")
-    if not QFontMetricsF(f).inFont(chr(code)):
+    if "Segoe Fluent Icons" not in QFontDatabase.families() or not QFontMetricsF(f).inFont(chr(code)):
         f = QFont("Segoe MDL2 Assets")
     f.setPixelSize(int(size * 1.6))
     p.setFont(f)
@@ -182,6 +184,10 @@ class ShotBar(QFrame):
                  f"Стоп — кнопкой «Стоп» или {hotkey_text(ov.cfg.get('hk_video', [3, 0x2C]))}")
         b.clicked.connect(ov.record_area)
         lay.addWidget(b)
+        b = _btn(self, glyph_icon(0xE8A7), "Открыть в редакторе — отдельное окно: смотреть рядом с другой "
+                 "работой, дорисовать, скопировать  (O)")
+        b.clicked.connect(ov.open_editor)
+        lay.addWidget(b)
         b = _btn(self, glyph_icon(0xE74E), "Сохранить как…  (Ctrl+S)")
         b.clicked.connect(ov.save_as)
         lay.addWidget(b)
@@ -282,6 +288,7 @@ class Overlay(QWidget):
     closed = Signal()
     record = Signal(QRect, bool, bool)  # область в экранных координатах, микрофон, звук ПК
     copied = Signal(str, QRect)  # путь сохранённого файла ("" — только буфер), область на экране
+    to_editor = Signal(QImage, object, QRect)  # картинка области, пометки в её координатах, область на экране
 
     def __init__(self, image: QImage, origin: QPoint, mode, windows, monitors, cfg):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -391,6 +398,9 @@ class Overlay(QWidget):
         self.sel = rect
         self.state = "edit"
         self.hover = None
+        if self.mode == "shot" and self.cfg.get("open_editor"):  # в настройках: выделил — сразу в редактор
+            self.open_editor()
+            return
         if self.bar is None:
             self.bar = ShotBar(self) if self.mode == "shot" else VideoBar(self)
             self.bar.show()
@@ -752,6 +762,8 @@ class Overlay(QWidget):
             self.update()
         elif not ctrl and vk == 0x56:  # V
             self.record_area()
+        elif not ctrl and vk == 0x4F:  # O
+            self.open_editor()
         elif not ctrl and vk in TOOL_VK:
             self.set_tool(TOOL_VK[vk])
         elif not ctrl and 0x31 <= vk <= 0x38:
@@ -818,6 +830,19 @@ class Overlay(QWidget):
         self._save(img, path)
         QGuiApplication.clipboard().setImage(img)
         self.close()
+
+    def open_editor(self):
+        """Выделенную область с пометками — в отдельное окно редактора (editor.py)."""
+        self.commit_text()
+        if self.state != "edit" or self.mode != "shot":
+            return
+        img = self.base.copy(self.sel)
+        shapes = copy.deepcopy(self.shapes)
+        for s in shapes:
+            s.moved(-self.sel.x(), -self.sel.y())
+        area = QRect(self.sel).translated(self.origin)
+        self.close()
+        self.to_editor.emit(img, shapes, area)
 
     def record_area(self):
         """Кнопка камеры на панели скриншота: сразу записать видео выделенной области."""

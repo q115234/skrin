@@ -208,6 +208,8 @@ class SettingsWindow(QWidget):
         gl.addLayout(fmt)
         gl.addWidget(self._check("save_on_copy", "По Ctrl+C не только копировать в буфер, но и сохранять файл в папку"))
         gl.addWidget(self._check("copy_toast", "Показывать «Скопировано» после Ctrl+C"))
+        gl.addWidget(self._check("open_editor", "Выделил область — сразу открывать её в окне редактора\n"
+                                 "(смотреть рядом с другой работой; иначе — кнопка «Открыть в редакторе» или O)"))
         lay.addWidget(g)
 
         self.autostart = QCheckBox("Запускать «Скрин» вместе с Windows")

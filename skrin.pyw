@@ -22,12 +22,13 @@ if not getattr(sys, "frozen", False):
 from PySide6.QtCore import QObject, QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox, QProgressDialog,
-                               QPushButton, QSystemTrayIcon, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox,
+                               QProgressDialog, QPushButton, QSystemTrayIcon, QVBoxLayout, QWidget)
 
 import config
 import winapi
 from config import hotkey_text, px
+from editor import EditorWindow, load_image
 from overlay import Overlay
 from recorder import Countdown, RecordFrame, Recorder, RecordPanel
 from updater import Updater
@@ -199,6 +200,7 @@ class App(QObject):
         if first_run:
             config.save_cfg(self.cfg)
         self.overlay = None
+        self.editors = []  # открытые окна редактора
         self.settings = None
         self.rec_ui = []
         self.last_video = None
@@ -238,6 +240,8 @@ class App(QObject):
         menu.addAction(self.a_shot)
         menu.addAction(self.a_video)
         menu.addSeparator()
+        menu.addAction("Открыть картинку в редакторе…", self.open_image_file)
+        menu.addAction("Картинку из буфера обмена — в редактор", self.open_clipboard)
         menu.addAction("Открыть папку со скриншотами", lambda: self.open_dir(self.cfg["shot_dir"]))
         self.a_vdir = menu.addAction("Открыть папку с видео", lambda: self.open_dir(self.cfg["video_dir"]))
         menu.addSeparator()
@@ -481,8 +485,41 @@ class App(QObject):
         ov.closed.connect(self.on_overlay_closed)
         ov.record.connect(self.start_record)
         ov.copied.connect(self.on_copied)
+        ov.to_editor.connect(self.open_editor)
         self.overlay = ov
         ov.present()
+
+    # ---------- редактор ----------
+    def open_editor(self, img, shapes=(), area=None, path=None):
+        w = EditorWindow(img, list(shapes), self.cfg, area, path)
+        w.copied.connect(self.on_copied)
+        w.closing.connect(self.on_editor_closed)
+        self.editors.append(w)
+        w.present()
+        log.info("редактор: %dx%d%s", img.width(), img.height(), f", {Path(path).name}" if path else "")
+
+    def on_editor_closed(self, w):
+        if w in self.editors:
+            self.editors.remove(w)
+        config.save_cfg(self.cfg)
+
+    def open_image_file(self):
+        path, _ = QFileDialog.getOpenFileName(None, "Открыть картинку в редакторе", self.cfg["shot_dir"],
+                                              "Картинки (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;Все файлы (*)")
+        if not path:
+            return
+        img = load_image(path)
+        if img is None:
+            QMessageBox.warning(None, "Скрин", f"Не удалось открыть картинку:\n{path}")
+            return
+        self.open_editor(img, path=path)
+
+    def open_clipboard(self):
+        img = QGuiApplication.clipboard().image()
+        if img.isNull():
+            self.tray.showMessage("Скрин", "В буфере обмена нет картинки.", QSystemTrayIcon.Information, 4000)
+            return
+        self.open_editor(img.convertToFormat(QImage.Format_RGB32))
 
     def on_overlay_closed(self):
         self.overlay = None

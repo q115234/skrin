@@ -46,6 +46,7 @@ def defaults():
         "jpg_quality": 90,
         "save_on_copy": True,          # Ctrl+C: кроме буфера ещё и файл в папку
         "copy_toast": True,            # показывать «Скопировано»
+        "open_editor": False,          # выделил область — сразу в окно редактора (а не рисовать поверх экрана)
         # клавиши
         "hk_shot": [0, VK_SNAPSHOT],                          # PrtScn
         "hk_video": [MOD_CONTROL | MOD_ALT, VK_SNAPSHOT],     # Ctrl+Alt+PrtScn
