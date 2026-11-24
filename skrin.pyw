@@ -9,6 +9,7 @@ import sys
 os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "0"  # координаты Qt = настоящие пиксели экрана
 
 import ctypes
+import gc
 import getpass
 import logging
 import subprocess
@@ -519,6 +520,7 @@ class App(QObject):
         if w in self.editors:
             self.editors.remove(w)
         config.save_cfg(self.cfg)
+        QTimer.singleShot(1500, gc.collect)  # холст и окно ссылаются друг на друга — см. on_overlay_closed
 
     def open_image_file(self):
         path, _ = QFileDialog.getOpenFileName(None, "Открыть картинку в редакторе", self.cfg["shot_dir"],
@@ -541,6 +543,9 @@ class App(QObject):
     def on_overlay_closed(self):
         self.overlay = None
         config.save_cfg(self.cfg)
+        # Остаток окна (обёртки Python, петли ссылок) — собрать сразу, а не когда-нибудь: Qt почти не
+        # создаёт объектов Python, и полный проход сборщика сам по себе случается редко (утечка 1.3.0).
+        QTimer.singleShot(1500, gc.collect)
 
     def on_copied(self, path, area):
         if not self.cfg.get("copy_toast", True):

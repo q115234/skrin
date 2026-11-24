@@ -385,6 +385,15 @@ class Overlay(QWidget):
             self.cfg["mic"], self.cfg["system_audio"] = self.bar.mic.isChecked(), self.bar.sys.isChecked()
         self.closed.emit()
         super().closeEvent(e)
+        # Утечка памяти 1.3.0 (25.11.2026): окно и панель кнопок ссылаются друг на друга (bar.ov, лямбды
+        # кнопок), такую петлю освобождает только редкий полный проход сборщика мусора Python — и до него
+        # в памяти висели три копии всего экрана (на 3 мониторах по ~77 МБ), +75–150 МБ на каждый
+        # скриншот с панелью; за полтора дня Скрин дорос до 2,5 ГБ. Всё нужное считается до close(),
+        # поэтому картинки отпускаем сразу, а петлю рвём.
+        self.base = self.base_pm = self.dim_pm = None
+        if self.bar is not None:
+            self.bar.ov = None
+        self.bar = None
 
     # ---------- геометрия ----------
     def _monitor_at(self, pt):
@@ -637,8 +646,11 @@ class Overlay(QWidget):
                 if self.drag_rect is not None or (pos - self.drag_from).manhattanLength() > 4:
                     old = self.drag_rect
                     self.drag_rect = QRect(self.drag_from, pos).normalized()
-                    self.hover = None
-                    self._upd(old, self.drag_rect, self._hint_rect(old_mouse), self._hint_rect(pos))
+                    # Подсвеченное окно гаснет в момент начала выделения — его место тоже перерисовать.
+                    # Иначе окно оставалось светлым, а затемнение дорисовывалось только полосой вокруг
+                    # растущей рамки и «расползалось» ступеньками, как тень (баг 1.3.0, 25.11.2026).
+                    old_hover, self.hover = self.hover, None
+                    self._upd(old, old_hover, self.drag_rect, self._hint_rect(old_mouse), self._hint_rect(pos))
             else:
                 self._update_hover(pos, old_mouse)
             return
@@ -902,6 +914,8 @@ class Overlay(QWidget):
 
     # ---------- рисование ----------
     def paintEvent(self, e):
+        if self.base_pm is None:  # окно уже закрыто, картинки отпущены (у холста редактора свой paintEvent)
+            return
         p = QPainter(self)
         for r in e.region():
             p.drawPixmap(r, self.dim_pm, r)
