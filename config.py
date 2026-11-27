@@ -3,6 +3,7 @@ import ctypes
 import json
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 VERSION = "1.3.1"
@@ -46,7 +47,7 @@ def defaults():
         "jpg_quality": 90,
         "save_on_copy": True,          # Ctrl+C: кроме буфера ещё и файл в папку
         "copy_toast": True,            # показывать «Скопировано»
-        "open_editor": False,          # выделил область — сразу в окно редактора (а не рисовать поверх экрана)
+        "open_editor": True,           # выделил область — сразу в окно редактора (а не рисовать поверх экрана)
         # клавиши
         "hk_shot": [0, VK_SNAPSHOT],                          # PrtScn
         "hk_video": [MOD_CONTROL | MOD_ALT, VK_SNAPSHOT],     # Ctrl+Alt+PrtScn
@@ -94,6 +95,34 @@ def save_cfg(cfg):
     os.replace(tmp, CFG_PATH)
 
 
+# Ответы на вопросы установщика (build/skrin.iss): он пишет их сюда, а Скрин при запуске переносит в настройки
+# и удаляет файл. Так всё настраивается при установке, и окно настроек само не открывается.
+SETUP_PATH = DATA / "setup.json"
+
+
+def apply_setup(cfg):
+    """Перенести ответы установщика в настройки. Возвращает ответы или None, если их нет."""
+    if not SETUP_PATH.exists():
+        return None
+    try:
+        answers = json.loads(SETUP_PATH.read_text("utf-8-sig"))
+    except Exception:
+        answers = {}
+    known = defaults()
+    cfg.update({k: v for k, v in answers.items() if k in known and type(v) is type(known[k])})
+    for key in ("shot_dir", "video_dir"):
+        try:
+            Path(cfg[key]).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+    save_cfg(cfg)
+    try:
+        SETUP_PATH.unlink()
+    except OSError:
+        pass
+    return answers
+
+
 # ---------- названия клавиш ----------
 _VK_NAMES = {
     0x2C: "PrtScn", 0x13: "Pause", 0x91: "ScrollLock", 0x2D: "Insert", 0x2E: "Delete", 0x24: "Home",
@@ -130,7 +159,10 @@ def hotkey_text(hk):
     return "+".join(parts)
 
 
-# ---------- масштаб интерфейса (экраны 125–200 %) ----------
+# ---------- масштаб интерфейса (экраны 100–200 %, у каждого монитора свой) ----------
+# Qt работает в настоящих пикселях (QT_ENABLE_HIGHDPI_SCALING=0), поэтому кнопки и шрифты умножаются на масштаб
+# сами — и на масштаб того монитора, где окно, а не основного: у ноутбука 200 % со вторым монитором 100 % иначе
+# всё на втором мониторе вдвое крупнее.
 def _system_scale():
     try:
         return max(1.0, ctypes.windll.user32.GetDpiForSystem() / 96.0)
@@ -138,11 +170,95 @@ def _system_scale():
         return 1.0
 
 
-SCALE = _system_scale()
+SCALE = _system_scale()  # основной монитор — пока неизвестно, на каком мониторе окно
+_scales = []
 
 
-def px(n):
-    return int(round(n * SCALE))
+def screen_scale(screen):
+    """Масштаб монитора (QScreen): 1.0 — 100 %, 2.0 — 200 %."""
+    try:
+        return max(1.0, screen.logicalDotsPerInch() / 96.0)
+    except Exception:
+        return SCALE
+
+
+def scale_at(pt):
+    """Масштаб монитора под точкой (экранные пиксели)."""
+    from PySide6.QtGui import QGuiApplication
+    s = QGuiApplication.screenAt(pt) or QGuiApplication.primaryScreen()
+    return screen_scale(s) if s is not None else SCALE
+
+
+def scale_for(rect):
+    """Масштаб монитора, на который приходится большая часть области."""
+    from PySide6.QtGui import QGuiApplication
+    best, most = None, 0
+    for s in QGuiApplication.screens():
+        r = s.geometry().intersected(rect)
+        if not r.isEmpty() and r.width() * r.height() > most:
+            best, most = s, r.width() * r.height()
+    return screen_scale(best) if best is not None else scale_at(rect.center())
+
+
+@contextmanager
+def ui_scale(k):
+    """Всё, что строится внутри with, получает размеры px() для монитора с масштабом k."""
+    _scales.append(k)
+    try:
+        yield k
+    finally:
+        _scales.pop()
+
+
+def cur_scale():
+    return _scales[-1] if _scales else SCALE
+
+
+def px(n, k=None):
+    return int(round(n * (cur_scale() if k is None else k)))
+
+
+class Rescaler:
+    """Размеры окна под масштаб монитора, где оно сейчас. Окно можно перетащить на монитор с другим
+    масштабом — тогда всё, что зарегистрировано через fit(), выставляется заново."""
+
+    def __init__(self, window, k, resize=True):
+        self.window, self.k, self.resize = window, k, resize
+        self._fns = []
+        self._following = False
+
+    def fit(self, fn):
+        """fn() выставляет размеры через px(); вызывается сразу и после каждой смены масштаба."""
+        self._fns.append(fn)
+        with ui_scale(self.k):
+            fn()
+
+    def follow(self):
+        """Вызвать, когда окно показано (showEvent): следить, на каком мониторе оно."""
+        wh = self.window.windowHandle()
+        if wh is None or self._following:
+            return
+        self._following = True
+        wh.screenChanged.connect(lambda s: self.set(screen_scale(s)))
+        self.set(screen_scale(wh.screen()))  # Windows могла открыть окно не на том мониторе, что ждали
+
+    def set(self, k):
+        if abs(k - self.k) < 0.01:
+            return
+        ratio, self.k = k / self.k, k
+        with ui_scale(k):
+            for fn in self._fns:
+                fn()
+        if self.resize:
+            from PySide6.QtCore import QTimer
+            w = self.window
+
+            def _resize():  # после того, как Windows сама подвинет окно на новый монитор
+                try:
+                    w.resize((w.size() * ratio).expandedTo(w.minimumSizeHint()))
+                except RuntimeError:  # окно уже закрыто
+                    pass
+            QTimer.singleShot(0, _resize)
 
 
 # ---------- «Ножницы» Windows на PrtScn ----------

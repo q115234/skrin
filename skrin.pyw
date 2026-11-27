@@ -13,6 +13,7 @@ import gc
 import getpass
 import logging
 import subprocess
+import threading
 import winreg
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -21,7 +22,7 @@ if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from PySide6.QtCore import QObject, QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QCursor, QGuiApplication, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox,
                                QProgressDialog, QPushButton, QSystemTrayIcon, QVBoxLayout, QWidget)
@@ -90,6 +91,17 @@ def grab_screen():
 
 def show_in_folder(path):
     subprocess.Popen(["explorer", "/select,", str(Path(path))])
+
+
+def cursor_screen():
+    """Монитор, где мышь: там и открыть окно (и размеры — под его масштаб)."""
+    return QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+
+
+def center_on(w, screen):
+    w.adjustSize()
+    ag = screen.availableGeometry()
+    w.move(ag.center().x() - w.width() // 2, max(ag.top(), ag.center().y() - w.height() // 2))
 
 
 POPUP_CSS = """
@@ -167,11 +179,12 @@ class Toast(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.path = path
+        k = config.scale_for(area)  # масштаб монитора, где область
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lab = QLabel(text, self)
-        lab.setStyleSheet(f"background: rgba(30,31,36,235); color: white; border-radius: {px(16)}px;"
-                          f" padding: {px(8)}px {px(18)}px; font: 600 {px(14)}px 'Segoe UI';")
+        lab.setStyleSheet(f"background: rgba(30,31,36,235); color: white; border-radius: {px(16, k)}px;"
+                          f" padding: {px(8, k)}px {px(18, k)}px; font: 600 {px(14, k)}px 'Segoe UI';")
         lay.addWidget(lab)
         if path:
             self.setCursor(Qt.PointingHandCursor)
@@ -180,7 +193,7 @@ class Toast(QWidget):
         screen = QGuiApplication.screenAt(area.center()) or QGuiApplication.primaryScreen()
         sr = screen.availableGeometry()
         x = area.center().x() - self.width() // 2
-        y = area.bottom() - self.height() - px(16)
+        y = area.bottom() - self.height() - px(16, k)
         x = max(sr.left() + 8, min(x, sr.right() - self.width() - 8))
         y = max(sr.top() + 8, min(y, sr.bottom() - self.height() - 8))
         self.move(x, y)
@@ -195,11 +208,14 @@ class Toast(QWidget):
 class App(QObject):
     hotkey = Signal(int)
 
-    def __init__(self, app, open_settings=False):
+    def __init__(self, app, open_settings=False, autostart=False):
         super().__init__()
         self.app = app
         self.cfg, first_run = config.load_cfg()
-        if first_run:
+        setup = config.apply_setup(self.cfg)  # ответы на вопросы установщика → в настройки
+        if setup is not None:
+            self._apply_setup_keys(setup)
+        elif first_run:
             config.save_cfg(self.cfg)
         self.overlay = None
         self.editors = []  # открытые окна редактора
@@ -259,16 +275,59 @@ class App(QObject):
         self.hotkey.connect(self.on_hotkey)
         self.start_hotkeys(report=True)
         self.update_texts()
-        log.info("запущен %s (%s), клавиши: %s", config.VERSION, "exe" if config.FROZEN else "py",
-                 "ок" if not self.hk_failed_names else self.hk_failed_names)
-        if first_run or open_settings:
-            QTimer.singleShot(300, lambda: self.open_settings(first_run))
+        log.info("запущен %s (%s%s), клавиши: %s", config.VERSION, "exe" if config.FROZEN else "py",
+                 ", автозапуск" if autostart else "", "ок" if not self.hk_failed_names else self.hk_failed_names)
+        if setup is not None:
+            log.info("настройки из установщика: %s", {k: v for k, v in setup.items() if not k.endswith("_dir")})
+        # Настройки сами не открываются: всё спросил установщик. Только подсказать, где значок и какие клавиши.
+        if open_settings:
+            QTimer.singleShot(300, self.open_settings)
+        elif first_run or setup is not None:
+            QTimer.singleShot(1500, lambda: self.say_hello("Скрин работает"))
+        if setup and setup.get("yandex_off"):
+            QTimer.singleShot(2000, self._yandex_off_from_setup)
         # обновления — только у установленной версии (версия из исходников обновляется сборкой)
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.auto_check_update)
         self.update_timer.start(6 * 3600 * 1000)
         QTimer.singleShot(30_000, self.auto_check_update)
-        QTimer.singleShot(5_000, self.check_yandex)
+        if not (setup and setup.get("yandex_off")):  # иначе браузер как раз сейчас перенастраивается
+            QTimer.singleShot(5_000, self.check_yandex)
+
+    # ---------- после установки ----------
+    def _apply_setup_keys(self, setup):
+        """Галочка установщика «PrtScn — для Скрина»: без неё (если PrtScn у «Ножниц») снимать по Ctrl+PrtScn.
+        Свои сочетания, выбранные в настройках, не трогаем."""
+        if "prtscn" not in setup:
+            return
+        plain, ctrl = [0, config.VK_SNAPSHOT], [config.MOD_CONTROL, config.VK_SNAPSHOT]
+        hk = list(self.cfg["hk_shot"])
+        if setup["prtscn"] and hk == ctrl:
+            self.cfg["hk_shot"] = plain
+        elif not setup["prtscn"] and hk == plain and config.snipping_on_prtscn():
+            self.cfg["hk_shot"] = ctrl
+        else:
+            return
+        config.save_cfg(self.cfg)
+
+    def say_hello(self, title):
+        ks, kv = hotkey_text(self.cfg["hk_shot"]), hotkey_text(self.cfg["hk_video"])
+        self.msg_kind = ""
+        self.tray.showMessage(title, f"{ks} — скриншот, {kv} — запись видео.\n"
+                              "Настройки — в меню этого значка (правая кнопка мыши).",
+                              QSystemTrayIcon.Information, 8000)
+
+    def _yandex_off_from_setup(self):
+        """Галочка установщика «выключить скриншоты Яндекс Браузера». Браузер, если открыт, перезапускается
+        с теми же вкладками (об этом сказано у галочки) — в фоне, чтобы Скрин не ждал."""
+        def work():
+            try:
+                if yandex.installed() and yandex.hotkeys_on():
+                    ok = yandex.restart_with_hotkeys(False)
+                    log.info("Яндекс Браузер из установщика: %s", "выключено" if ok else "не получилось")
+            except Exception:
+                log.exception("Яндекс Браузер из установщика")
+        threading.Thread(target=work, daemon=True).start()
 
     # ---------- Яндекс Браузер тоже снимает по PrtScn ----------
     def check_yandex(self):
@@ -360,8 +419,11 @@ class App(QObject):
             except RuntimeError:
                 self.support = None
         from support import SupportWindow
-        self.support = SupportWindow(self)
+        scr = cursor_screen()
+        with config.ui_scale(config.screen_scale(scr)):
+            self.support = SupportWindow(self)
         self.support.destroyed.connect(lambda: setattr(self, "support", None))
+        center_on(self.support, scr)
         self.support.show()
         self.support.raise_()
         self.support.activateWindow()
@@ -381,6 +443,14 @@ class App(QObject):
                 self.tray.showMessage("Скрин", "Клавиши заняты другой программой: " +
                                       ", ".join(self.hk_failed_names) +
                                       ".\nВыберите другие в «Настройки… → Клавиши».", QSystemTrayIcon.Warning, 8000)
+
+    def pause_hotkeys(self, paused):
+        """Поле «нажмите сочетание» в настройках: пока оно ждёт клавиши, свои сочетания отпустить, иначе PrtScn
+        до поля не дойдёт."""
+        if paused:
+            self.stop_hotkeys()
+        elif self.hk is None:
+            self.start_hotkeys()
 
     def stop_hotkeys(self):
         if self.hk is not None:
@@ -413,8 +483,11 @@ class App(QObject):
             self.settings.activateWindow()
             return
         from settings import SettingsWindow
-        self.stop_hotkeys()  # чтобы в поле можно было нажать любое сочетание
-        self.settings = SettingsWindow(self, first_run)
+        # клавиши Скрина работают и при открытых настройках — отключаются, только пока набирают новое сочетание
+        scr = cursor_screen()
+        with config.ui_scale(config.screen_scale(scr)):
+            self.settings = SettingsWindow(self, first_run)
+        center_on(self.settings, scr)
         self.settings.show()
         self.settings.raise_()
         self.settings.activateWindow()
@@ -435,11 +508,12 @@ class App(QObject):
         self.update_texts()
 
     def autostart_cmd(self):
+        # --autostart: в журнале видно, что запустила Windows, а уже запущенный Скрин не открывает настроек
         if config.FROZEN:
-            return f'"{sys.executable}"'
+            return f'"{sys.executable}" --autostart'
         exe = Path(sys.executable)
         pyw = exe.with_name("pythonw.exe")
-        return f'"{pyw if pyw.exists() else exe}" "{config.APP_DIR / "skrin.pyw"}"'
+        return f'"{pyw if pyw.exists() else exe}" "{config.APP_DIR / "skrin.pyw"}" --autostart'
 
     def autostart_enabled(self):
         try:
@@ -495,11 +569,13 @@ class App(QObject):
         try:
             img, origin = grab_screen()
             windows = winapi.list_windows()
-            monitors = [s.geometry() for s in QGuiApplication.screens()]
+            screens = QGuiApplication.screens()
+            monitors = [s.geometry() for s in screens]
+            scales = [config.screen_scale(s) for s in screens]
         except Exception:
             log.exception("не удалось снять экран")
             return
-        ov = Overlay(img, origin, mode, windows, monitors, self.cfg)
+        ov = Overlay(img, origin, mode, windows, monitors, self.cfg, scales)
         ov.closed.connect(self.on_overlay_closed)
         ov.record.connect(self.start_record)
         ov.copied.connect(self.on_copied)
@@ -654,31 +730,42 @@ class App(QObject):
 
 def main():
     want_settings = "--settings" in sys.argv
+    autostart = "--autostart" in sys.argv
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("Скрин")
     app.setWindowIcon(app_icon())
 
-    # уже запущен? — попросить его открыть настройки и выйти
+    # уже запущен? — ярлык «Скрин — настройки» открывает в нём настройки, просто запуск — подсказка у значка,
+    # из автозапуска — ничего. Сами по себе настройки не открываются.
     sock = QLocalSocket()
     sock.connectToServer(SERVER_NAME)
     if sock.waitForConnected(500):
-        sock.write(b"settings")
-        sock.flush()
-        sock.waitForBytesWritten(500)
+        if autostart:
+            log.info("автозапуск: Скрин уже запущен")
+        else:
+            sock.write(b"settings" if want_settings else b"hello")
+            sock.flush()
+            sock.waitForBytesWritten(500)
         sock.disconnectFromServer()
         return
     if not winapi.single_instance("Local\\SkrinScreenshotApp"):
         return
 
-    main_app = App(app, open_settings=want_settings)
+    main_app = App(app, open_settings=want_settings, autostart=autostart)
     server = QLocalServer()
     QLocalServer.removeServer(SERVER_NAME)
     server.listen(SERVER_NAME)
 
     def on_conn():
         c = server.nextPendingConnection()
-        c.readyRead.connect(lambda: (c.readAll(), main_app.open_settings()))
+
+        def on_read():
+            if b"settings" in bytes(c.readAll()):
+                main_app.open_settings()
+            else:
+                main_app.say_hello("Скрин уже работает")
+        c.readyRead.connect(on_read)
     server.newConnection.connect(on_conn)
     sys.exit(app.exec())
 

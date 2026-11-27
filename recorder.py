@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QWidget
 
 import winapi
 from audio import AudioCapture, AudioHost
-from config import FFMPEG, px
+from config import FFMPEG, px, scale_for
 
 NOWIN = subprocess.CREATE_NO_WINDOW
 log = logging.getLogger("skrin")
@@ -283,6 +283,7 @@ class Countdown(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setGeometry(rect.adjusted(-3, -3, 3, 3))
+        self.k = scale_for(rect)  # масштаб монитора, где будет запись
         self.left = seconds
         self.hint = f"Отмена — {cancel_hint}" if cancel_hint else ""
         self.timer = QTimer(self)
@@ -315,7 +316,8 @@ class Countdown(QWidget):
         p.setPen(QPen(QColor(229, 51, 58), 2))
         p.setBrush(Qt.NoBrush)
         p.drawRect(QRectF(1, 1, w - 2, h - 2))
-        r = max(28, min(px(90), int(min(w, h) * 0.22)))
+        k = self.k
+        r = max(28, min(px(90, k), int(min(w, h) * 0.22)))
         cx, cy = w / 2, h / 2
         p.setPen(QPen(QColor(255, 255, 255, 200), 3))
         p.setBrush(QColor(229, 51, 58, 225))
@@ -326,12 +328,12 @@ class Countdown(QWidget):
         p.setFont(f)
         p.setPen(QColor(255, 255, 255))
         p.drawText(QRectF(cx - r, cy - r, 2 * r, 2 * r), Qt.AlignCenter, str(self.left))
-        if self.hint and h > 2 * r + px(60):
-            f.setPixelSize(px(14))
+        if self.hint and h > 2 * r + px(60, k):
+            f.setPixelSize(px(14, k))
             f.setBold(False)
             p.setFont(f)
-            tw = QFontMetricsF(f).horizontalAdvance(self.hint) + px(20)
-            box = QRectF(cx - tw / 2, cy + r + px(10), tw, px(26))
+            tw = QFontMetricsF(f).horizontalAdvance(self.hint) + px(20, k)
+            box = QRectF(cx - tw / 2, cy + r + px(10, k), tw, px(26, k))
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(20, 20, 24, 200))
             p.drawRoundedRect(box, 6, 6)
@@ -348,18 +350,19 @@ class RecordPanel(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.t0 = time.time()
+        k = scale_for(rect)  # масштаб монитора, где идёт запись
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(px(12), px(6), px(6), px(6))
-        lay.setSpacing(px(10))
+        lay.setContentsMargins(px(12, k), px(6, k), px(6, k), px(6, k))
+        lay.setSpacing(px(10, k))
         self.label = QLabel("● 00:00", self)
-        self.label.setStyleSheet(f"color: #ff4d55; font: 600 {px(14)}px 'Segoe UI';")
+        self.label.setStyleSheet(f"color: #ff4d55; font: 600 {px(14, k)}px 'Segoe UI';")
         lay.addWidget(self.label)
         b = QToolButton(self)
         b.setText("■  Стоп")
         b.setToolTip(f"Остановить запись ({stop_hint})" if stop_hint else "Остановить запись")
         b.setCursor(Qt.PointingHandCursor)
         b.setStyleSheet("QToolButton { background: #e5333a; color: white; border: none; border-radius: 6px;"
-                        f" padding: {px(5)}px {px(12)}px; font: 600 {px(13)}px 'Segoe UI'; }}"
+                        f" padding: {px(5, k)}px {px(12, k)}px; font: 600 {px(13, k)}px 'Segoe UI'; }}"
                         " QToolButton:hover { background: #f2545a; }")
         b.clicked.connect(self.stop_clicked.emit)
         lay.addWidget(b)

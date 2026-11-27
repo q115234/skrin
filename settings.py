@@ -28,12 +28,12 @@ class HotkeyEdit(QLineEdit):
     """Поле «нажмите сочетание»: запоминает [модификаторы, VK]."""
     changed = Signal()
 
-    def __init__(self, hk, parent=None):
+    def __init__(self, hk, parent=None, on_capture=None):
         super().__init__(parent)
         self.hk = list(hk)
+        self.on_capture = on_capture  # on_capture(True/False): поле ждёт сочетание — отпустить клавиши Скрина
         self.setReadOnly(True)
         self.setAlignment(Qt.AlignCenter)
-        self.setMinimumWidth(px(200))
         self.setText(hotkey_text(self.hk))
         self.setToolTip("Щёлкните и нажмите нужное сочетание клавиш")
 
@@ -44,10 +44,14 @@ class HotkeyEdit(QLineEdit):
 
     def focusInEvent(self, e):
         super().focusInEvent(e)
+        if self.on_capture:
+            self.on_capture(True)
         self.setText("Нажмите сочетание…")
 
     def focusOutEvent(self, e):
         super().focusOutEvent(e)
+        if self.on_capture:
+            self.on_capture(False)
         self.setText(hotkey_text(self.hk))
 
     def keyPressEvent(self, e):
@@ -90,13 +94,13 @@ class SettingsWindow(QWidget):
         self.setWindowTitle("Скрин — настройки")
         self.setWindowIcon(app.tray.icon())
         self.setAttribute(Qt.WA_DeleteOnClose)
-        f = QFont("Segoe UI")
-        f.setPixelSize(px(13))
-        self.setFont(f)
-        self.setMinimumWidth(px(640))
+        # размеры — под масштаб монитора, где окно (строится внутри ui_scale), и заново при переезде на другой
+        self.sk = config.Rescaler(self, config.cur_scale())
+        self.sk.fit(self._fit_font)
+        self.sk.fit(lambda: self.setMinimumWidth(px(640)))
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(px(14), px(12), px(14), px(12))
+        self.sk.fit(lambda: root.setContentsMargins(px(14), px(12), px(14), px(12)))
         if first_run:
             hello = QLabel("<b>Скрин установлен.</b> Проверьте папки и клавиши, затем нажмите «Сохранить».<br>"
                            "Потом настройки всегда можно открыть из меню значка в трее (рядом с часами).")
@@ -119,7 +123,7 @@ class SettingsWindow(QWidget):
         cancel = QPushButton("Отмена")
         cancel.clicked.connect(self.close)
         for b in (ok, cancel):
-            b.setMinimumWidth(px(110))
+            self.sk.fit(lambda b=b: b.setMinimumWidth(px(110)))
             btns.addWidget(b)
         root.addLayout(btns)
 
@@ -131,6 +135,15 @@ class SettingsWindow(QWidget):
         self.dev_timer.timeout.connect(self._try_fill_devices)
         self.dev_timer.start(400)
         self._try_fill_devices()
+
+    def _fit_font(self):
+        f = QFont("Segoe UI")
+        f.setPixelSize(px(13))
+        self.setFont(f)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.sk.follow()
 
     # ---------- вкладки ----------
     def _folder_row(self, key):
@@ -237,7 +250,8 @@ class SettingsWindow(QWidget):
         rows = [("hk_shot", "Скриншот области:", [0, config.VK_SNAPSHOT]),
                 ("hk_video", "Запись видео / стоп:", [MOD_CONTROL | MOD_ALT, config.VK_SNAPSHOT])]
         for i, (key, label, dflt) in enumerate(rows):
-            e = HotkeyEdit(self.c[key])
+            e = HotkeyEdit(self.c[key], on_capture=getattr(self.app, "pause_hotkeys", None))
+            self.sk.fit(lambda ed=e: ed.setMinimumWidth(px(200)))
             e.changed.connect(lambda k=key, ed=e: (self.c.__setitem__(k, list(ed.hk)), self._check_keys()))
             b = QPushButton("По умолчанию")
             b.clicked.connect(lambda _=False, ed=e, d=dflt: ed.set_hk(d))
@@ -348,14 +362,14 @@ class SettingsWindow(QWidget):
             on = self._check(flag, "Записывать в видео")
             gl.addWidget(on, 0, 0, 1, 3)
             combo = QComboBox()
-            combo.setMinimumWidth(px(380))
+            self.sk.fit(lambda cb=combo: cb.setMinimumWidth(px(380)))
             combo.currentIndexChanged.connect(lambda _, k=kind: self._device_changed(k))
             gl.addWidget(QLabel("Устройство:"), 1, 0)
             gl.addWidget(combo, 1, 1, 1, 2)
             bar = QProgressBar()
             bar.setRange(0, 100)
             bar.setTextVisible(False)
-            bar.setFixedHeight(px(14))
+            self.sk.fit(lambda pb=bar: pb.setFixedHeight(px(14)))
             bar.setStyleSheet("QProgressBar { border: 1px solid #c8c8c8; border-radius: 4px; background: #f0f0f0; }"
                               "QProgressBar::chunk { background: #22c55e; border-radius: 3px; }")
             gl.addWidget(QLabel("Уровень:"), 2, 0)
@@ -366,7 +380,7 @@ class SettingsWindow(QWidget):
             vol.setPageStep(25)
             vol.setValue(int(self.c.get(vol_key, 100)))
             vlabel = QLabel(f"{vol.value()} %")
-            vlabel.setMinimumWidth(px(48))
+            self.sk.fit(lambda lb=vlabel: lb.setMinimumWidth(px(48)))
             vol.valueChanged.connect(lambda v, k=vol_key, lb=vlabel: (self.c.__setitem__(k, v), lb.setText(f"{v} %")))
             gl.addWidget(QLabel("Громкость в видео:"), 3, 0)
             gl.addWidget(vol, 3, 1)

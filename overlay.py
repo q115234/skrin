@@ -10,7 +10,7 @@ from PySide6.QtGui import (QColor, QCursor, QFont, QFontDatabase, QFontMetricsF,
 from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QPlainTextEdit, QToolButton, QWidget)
 
 import winapi
-from config import hotkey_text, px
+from config import cur_scale, hotkey_text, px, ui_scale
 from shapes import SIZES, Shape, draw_shape, hit_test, shape_bounds, text_box, text_font
 
 ACCENT = QColor(0, 160, 255)
@@ -37,7 +37,11 @@ QToolButton#rec { background: #e5333a; color: white; padding: 3px 12px; font-wei
 QToolButton#rec:hover { background: #f2545a; }
 QToolButton#toggle { padding: 3px 10px; }
 QFrame#sep { background: rgba(255,255,255,40); min-width: 1px; max-width: 1px; margin: 6px 3px; }
-""" % {"btn": px(42), "font": px(14)}
+"""
+
+
+def bar_css():
+    return BAR_CSS % {"btn": px(42), "font": px(14)}
 
 
 def glyph_icon(code, color="#f0f0f0", size=20):
@@ -87,7 +91,7 @@ def tool_icon(kind):
         p.setPen(QColor(c))
         p.drawText(pm.rect(), Qt.AlignCenter, "A")
     elif kind == "number":
-        draw_shape(p, Shape("number", "#ff2a2a", 7 if px(21) <= 22 else 4, [(24, 24)], num=1))
+        draw_shape(p, Shape("number", "#ff2a2a", 7, [(24, 24)], num=1))  # k=1: значок 48 px при любом масштабе
     elif kind == "blur":  # картинка: левая половина чёткая, правая — та же, но мозаикой
         pic = QImage(36, 28, QImage.Format_ARGB32)
         pic.fill(QColor("#8fd0ff"))  # небо
@@ -187,8 +191,9 @@ class ShotBar(QFrame):
     def __init__(self, ov):
         super().__init__(ov)
         self.ov = ov
+        self.k = cur_scale()  # строится внутри ui_scale(масштаб монитора, где область)
         self.setObjectName("bar")
-        self.setStyleSheet(BAR_CSS)
+        self.setStyleSheet(bar_css())
         lay = QHBoxLayout(self)
         lay.setContentsMargins(5, 4, 5, 4)
         lay.setSpacing(2)
@@ -248,8 +253,9 @@ class VideoBar(QFrame):
     def __init__(self, ov):
         super().__init__(ov)
         self.ov = ov
+        self.k = cur_scale()
         self.setObjectName("bar")
-        self.setStyleSheet(BAR_CSS)
+        self.setStyleSheet(bar_css())
         lay = QHBoxLayout(self)
         lay.setContentsMargins(5, 4, 5, 4)
         lay.setSpacing(4)
@@ -288,7 +294,7 @@ class TextEditor(QPlainTextEdit):
         self._changed()
 
     def restyle(self):
-        self.setFont(text_font(self.shape.width))
+        self.setFont(text_font(self.shape.width, self.shape.k))
         self.setStyleSheet(f"QPlainTextEdit {{ background: transparent; color: {self.shape.color}; border: none; }}")
 
     def _changed(self):
@@ -326,7 +332,7 @@ class Overlay(QWidget):
     copied = Signal(str, QRect)  # путь сохранённого файла ("" — только буфер), область на экране
     to_editor = Signal(QImage, object, QRect)  # картинка области, пометки в её координатах, область на экране
 
-    def __init__(self, image: QImage, origin: QPoint, mode, windows, monitors, cfg):
+    def __init__(self, image: QImage, origin: QPoint, mode, windows, monitors, cfg, scales=None):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setMouseTracking(True)
@@ -344,6 +350,7 @@ class Overlay(QWidget):
         self.bounds = QRect(0, 0, image.width(), image.height())
         self.windows = [QRect(QPoint(l, t) - origin, QPoint(r - 1, b - 1) - origin) for l, t, r, b in windows]
         self.monitors = [m.translated(-origin) for m in monitors]
+        self.mon_scales = list(scales) if scales else [cur_scale()] * len(self.monitors)  # масштаб каждого
 
         self.state = "select"
         self.sel = None
@@ -405,6 +412,22 @@ class Overlay(QWidget):
     def _monitor_for(self, r: QRect):
         return max(self.monitors, key=lambda m: m.intersected(r).width() * m.intersected(r).height())
 
+    # Мониторы бывают с разным масштабом (ноутбук 200 % + монитор 100 %) — размеры берём от своего монитора.
+    def _k_of(self, mon):
+        return self.mon_scales[self.monitors.index(mon)]
+
+    def ui_k(self, pt):
+        """Масштаб монитора под точкой — для ручек, подписей, подсказки."""
+        return self._k_of(self._monitor_at(pt.toPoint() if isinstance(pt, QPointF) else pt))
+
+    def _bar_k(self):
+        """Масштаб монитора, где выделенная область, — там стоит панель кнопок."""
+        return self._k_of(self._monitor_for(self.sel))
+
+    def doc_k(self):
+        """Масштаб для новых пометок (размер текста и номеров) — монитора, где выделенная область."""
+        return self._bar_k() if self.sel is not None else self.ui_k(self.mouse)
+
     def _candidate(self, pt):
         for w in self.windows:
             if w.contains(pt):
@@ -420,8 +443,9 @@ class Overlay(QWidget):
     def _handle_at(self, pos):
         if not self.sel:
             return None
+        d = px(7, self.ui_k(pos))
         for i, h in enumerate(self._handles()):
-            if abs(h.x() - pos.x()) <= px(7) and abs(h.y() - pos.y()) <= px(7):
+            if abs(h.x() - pos.x()) <= d and abs(h.y() - pos.y()) <= d:
                 return i
         return None
 
@@ -447,16 +471,28 @@ class Overlay(QWidget):
             self.open_editor()
             return
         if self.bar is None:
-            self.bar = ShotBar(self) if self.mode == "shot" else VideoBar(self)
-            self.bar.show()
-            self.bar.adjustSize()
-            QTimer.singleShot(0, self.place_bar)  # после применения стилей размер панели уточняется
+            self._make_bar()
         self.place_bar()
         self.update()
+
+    def _make_bar(self):
+        with ui_scale(self._bar_k()):
+            self.bar = ShotBar(self) if self.mode == "shot" else VideoBar(self)
+        self.bar.show()
+        self.bar.adjustSize()
+        QTimer.singleShot(0, self.place_bar)  # после применения стилей размер панели уточняется
 
     def place_bar(self):
         if not self.bar or not self.sel:
             return
+        if abs(self.bar.k - self._bar_k()) > 0.01:  # область унесли на монитор с другим масштабом — панель заново
+            old = self.bar
+            if isinstance(old, VideoBar):
+                self.cfg["mic"], self.cfg["system_audio"] = old.mic.isChecked(), old.sys.isChecked()
+            old.hide()
+            old.ov = None
+            old.deleteLater()
+            self._make_bar()
         self.bar.adjustSize()
         b = self.bar.size()
         mon = self._monitor_for(self.sel)
@@ -613,15 +649,16 @@ class Overlay(QWidget):
         self.selected = None
         pt = (posf.x(), posf.y())
         if self.tool == "text":
-            self.start_text(Shape("text", self.color, self.width, [pt]), new=True)
+            self.start_text(Shape("text", self.color, self.width, [pt], k=self.doc_k()), new=True)
             return
         if self.tool == "number":
             self.push_undo()
-            self.last_drawn = Shape("number", self.color, self.width, [pt], num=self._next_number())
+            self.last_drawn = Shape("number", self.color, self.width, [pt], num=self._next_number(), k=self.doc_k())
             self.shapes.append(self.last_drawn)
             self.update()
             return
-        self.current = Shape(self.tool, self.color, self.width, [pt] if self.tool in ("pen", "marker") else [pt, pt])
+        self.current = Shape(self.tool, self.color, self.width, [pt] if self.tool in ("pen", "marker") else [pt, pt],
+                             k=self.doc_k())
         self.action = ("draw",)
 
     def mouseDoubleClickEvent(self, e):
@@ -748,9 +785,9 @@ class Overlay(QWidget):
             if SIZES[i] != self.width:
                 self.set_width(SIZES[i])
 
-    @staticmethod
-    def _hint_rect(pt):
-        return QRect(pt + QPoint(10, 20), QSize(px(700), px(44)))
+    def _hint_rect(self, pt):
+        k = self.ui_k(pt)
+        return QRect(pt + QPoint(10, 20), QSize(px(700, k), px(44, k)))
 
     def _update_hover(self, pos, old_mouse=None):
         old = self.hover
@@ -951,8 +988,8 @@ class Overlay(QWidget):
             if self.sel is not None:
                 p.setPen(QPen(QColor(255, 255, 255), 1))
                 p.setBrush(ACCENT)
+                hs = px(7, self.ui_k(self.sel.center()))
                 for h in self._handles():
-                    hs = px(7)
                     p.drawRect(QRectF(h.x() - hs / 2, h.y() - hs / 2, hs, hs))
             self._draw_label(p, bright, f"{bright.width()} × {bright.height()}")
         if self.state == "select":
@@ -962,7 +999,7 @@ class Overlay(QWidget):
 
     def _draw_label(self, p, r, text, below=False):
         f = QFont("Segoe UI")
-        f.setPixelSize(px(13))
+        f.setPixelSize(px(13, self.ui_k(r.topLeft())))
         p.setFont(f)
         fm = QFontMetricsF(f)
         w, h = fm.horizontalAdvance(text) + 16, fm.height() + 8

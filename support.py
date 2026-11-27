@@ -22,7 +22,7 @@ def system_info(app=None):
         "version": config.VERSION + (" exe" if config.FROZEN else " py"),
         "windows": f"{platform.release()} build {platform.version()}",
         "screens": ", ".join(f"{s.geometry().width()}x{s.geometry().height()}" for s in screens),
-        "scale": f"{int(config.SCALE * 100)}%",
+        "scale": ", ".join(f"{round(config.screen_scale(s) * 100)}%" for s in screens),
         "encoder": enc or "?",
     }
 
@@ -45,12 +45,11 @@ class SupportWindow(QWidget):
         self.setAttribute(Qt.WA_DeleteOnClose)
         if app is not None:
             self.setWindowIcon(app.tray.icon())
-        f = QFont("Segoe UI")
-        f.setPixelSize(px(13))
-        self.setFont(f)
-        self.setMinimumWidth(px(520))
+        self.sk = config.Rescaler(self, config.cur_scale())  # под масштаб монитора, где окно
+        self.sk.fit(self._fit_font)
+        self.sk.fit(lambda: self.setMinimumWidth(px(520)))
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(px(16), px(14), px(16), px(14))
+        self.sk.fit(lambda: lay.setContentsMargins(px(16), px(14), px(16), px(14)))
         intro = QLabel("Что-то не работает или есть идея? Напишите — ответим.")
         intro.setWordWrap(True)
         lay.addWidget(intro)
@@ -62,7 +61,7 @@ class SupportWindow(QWidget):
         self.text = QPlainTextEdit()
         self.text.setPlaceholderText("Опишите, что делали и что пошло не так. Например: «нажимаю PrtScn — ничего не "
                                      "происходит», «в видео нет звука микрофона».")
-        self.text.setMinimumHeight(px(140))
+        self.sk.fit(lambda: self.text.setMinimumHeight(px(140)))
         lay.addWidget(self.text)
         self.attach = QCheckBox("Приложить журнал работы программы — поможет быстрее найти причину\n"
                                 "(там версия, ошибки, названия папок и звуковых устройств; скриншотов и видео нет)")
@@ -79,10 +78,19 @@ class SupportWindow(QWidget):
         close = QPushButton("Закрыть")
         close.clicked.connect(self.close)
         for b in (self.send_btn, close):
-            b.setMinimumWidth(px(110))
+            self.sk.fit(lambda b=b: b.setMinimumWidth(px(110)))
             row.addWidget(b)
         lay.addLayout(row)
         self.sent.connect(self._done)
+
+    def _fit_font(self):
+        f = QFont("Segoe UI")
+        f.setPixelSize(px(13))
+        self.setFont(f)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.sk.follow()
 
     def send(self):
         contact = self.contact.text().strip()

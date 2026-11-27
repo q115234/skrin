@@ -19,6 +19,7 @@ class Shape:
     pts: list = field(default_factory=list)  # [(x, y), ...]
     text: str = ""
     num: int = 0
+    k: float = 1.0  # масштаб монитора, где рисовали: от него размер текста и номеров (на 200 % — вдвое крупнее)
 
     def p(self, i):
         x, y = self.pts[i]
@@ -28,15 +29,15 @@ class Shape:
         self.pts = [(x + dx, y + dy) for x, y in self.pts]
 
 
-def text_font(width):
+def text_font(width, k=1.0):
     f = QFont("Segoe UI")
     f.setBold(True)
-    f.setPixelSize(px({2: 16, 4: 22, 7: 30, 11: 42}.get(width, 22)))
+    f.setPixelSize(px({2: 16, 4: 22, 7: 30, 11: 42}.get(width, 22), k))
     return f
 
 
-def number_radius(width):
-    return px({2: 12, 4: 16, 7: 21, 11: 28}.get(width, 16))
+def number_radius(width, k=1.0):
+    return px({2: 12, 4: 16, 7: 21, 11: 28}.get(width, 16), k)
 
 
 def contrast_for(color):
@@ -51,7 +52,7 @@ def _rect(s):
 
 
 def _text_path(s):
-    f = text_font(s.width)
+    f = text_font(s.width, s.k)
     fm = QFontMetricsF(f)
     path = QPainterPath()
     x, y = s.pts[0]
@@ -61,7 +62,7 @@ def _text_path(s):
 
 
 def text_box(s):
-    f = text_font(s.width)
+    f = text_font(s.width, s.k)
     fm = QFontMetricsF(f)
     lines = s.text.split("\n") or [""]
     w = max(fm.horizontalAdvance(l) for l in lines)
@@ -117,14 +118,15 @@ def draw_shape(p: QPainter, s: Shape, base: QImage = None):
             p.drawPath(path)
     elif k == "text" and s.text:
         path = _text_path(s)
-        p.setPen(QPen(contrast_for(s.color), max(3.0, text_font(t).pixelSize() / 7), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setPen(QPen(contrast_for(s.color), max(3.0, text_font(t, s.k).pixelSize() / 7), Qt.SolidLine, Qt.RoundCap,
+                      Qt.RoundJoin))
         p.setBrush(Qt.NoBrush)
         p.drawPath(path)
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(color))
         p.drawPath(path)
     elif k == "number" and s.pts:
-        r = number_radius(t)
+        r = number_radius(t, s.k)
         c = s.p(0)
         p.setPen(QPen(QColor(255, 255, 255), 2))
         p.setBrush(QBrush(color))
@@ -185,7 +187,7 @@ def shape_bounds(s: Shape) -> QRectF:
     if s.kind == "text":
         return text_box(s)
     if s.kind == "number":
-        r = number_radius(s.width)
+        r = number_radius(s.width, s.k)
         x, y = s.pts[0]
         return QRectF(x - r, y - r, 2 * r, 2 * r)
     xs = [x for x, _ in s.pts]

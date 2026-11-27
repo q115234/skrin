@@ -10,12 +10,12 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QMouseEvent, QPainter, QPalette, QPen
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QImage, QMouseEvent, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (QFileDialog, QFrame, QMenu, QMessageBox, QScrollArea, QToolBar, QToolButton,
                                QVBoxLayout, QWidget)
 
 import winapi
-from config import px
+from config import Rescaler, px, scale_for, screen_scale, ui_scale
 from overlay import (COLORS, TOOL_NAMES, Overlay, TextEditor, _btn, color_icon, glyph_icon, size_icon,
                      tool_icon)
 from shapes import draw_shape, hit_test, shape_bounds, text_box, text_font
@@ -25,7 +25,6 @@ log = logging.getLogger("skrin")
 ZOOMS = [0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
 COLOR_NAMES = ["красный", "оранжевый", "жёлтый", "зелёный", "синий", "фиолетовый", "чёрный", "белый"]
 VK_PLUS, VK_MINUS, VK_ADD, VK_SUB = 0xBB, 0xBD, 0x6B, 0x6D
-ICON = px(24)
 
 EDITOR_CSS = """
 QToolBar { background: #1e1f24; border: none; border-bottom: 1px solid rgba(255,255,255,30);
@@ -43,14 +42,18 @@ QToolButton::menu-indicator { image: none; width: 0px; }
 QMenu { background: #26272c; color: #f0f0f0; border: 1px solid rgba(255,255,255,40); font: %(font)spx 'Segoe UI'; }
 QMenu::item { padding: 5px 18px 5px 8px; }
 QMenu::item:selected { background: rgba(0,150,255,110); }
-""" % {"btn": px(34), "font": px(13), "zw": px(54), "ext": px(16)}
+"""
+
+
+def editor_css():
+    return EDITOR_CSS % {"btn": px(34), "font": px(13), "zw": px(54), "ext": px(16)}
 
 
 class ZoomTextEditor(TextEditor):
     """Поле ввода текста поверх холста с учётом масштаба."""
 
     def restyle(self):
-        f = text_font(self.shape.width)
+        f = text_font(self.shape.width, self.shape.k)
         f.setPixelSize(max(1, round(f.pixelSize() * self.ov.zoom)))
         self.setFont(f)
         self.setStyleSheet(f"QPlainTextEdit {{ background: transparent; color: {self.shape.color}; border: none; }}")
@@ -67,13 +70,14 @@ class ZoomTextEditor(TextEditor):
 class Canvas(Overlay):
     """Холст редактора: Overlay, у которого выделена вся картинка, без затемнения, рамки и выхода по Esc."""
 
-    def __init__(self, win, image: QImage, shapes, cfg):
+    def __init__(self, win, image: QImage, shapes, cfg, doc_k):
         rect = QRect(0, 0, image.width(), image.height())
         super().__init__(image, QPoint(0, 0), "shot", [], [rect], cfg)
         self.setWindowFlags(Qt.Widget)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
         self.dim_pm = None
         self.win = win
+        self._doc_k = doc_k  # масштаб монитора, откуда скриншот: текст и номера такого же размера, как там
         self.shapes = list(shapes)
         self.sel = rect
         self.state = "edit"
@@ -100,6 +104,13 @@ class Canvas(Overlay):
             return e
         return QMouseEvent(e.type(), e.position() / self.zoom, e.globalPosition(), e.button(), e.buttons(),
                            e.modifiers())
+
+    # ---------- масштаб монитора: окно, а не экран целиком ----------
+    def ui_k(self, pt):
+        return self.win.sk.k
+
+    def doc_k(self):
+        return self._doc_k
 
     # ---------- то, чего в окне нет ----------
     def present(self):
@@ -254,8 +265,8 @@ class EditorBar(QToolBar):
         self.win, self.cv = win, cv
         self.setMovable(False)
         self.setFloatable(False)
-        self.setIconSize(QSize(ICON, ICON))
-        self.setStyleSheet(EDITOR_CSS)
+        self._icon_btns = []
+        self.rescale()
         # сначала действия — в узком окне они остаются на виду, а инструменты уходят под «»»
         self._b(glyph_icon(0xE8C8, "#ffffff"), "Скопировать в буфер обмена (и сохранить в папку, если так "
                 "в настройках)  (Ctrl+C или Enter)", text="Ctrl+C", name="accent").clicked.connect(cv.finish)
@@ -295,9 +306,18 @@ class EditorBar(QToolBar):
     def _b(self, icon, tip, text="", checkable=False, name=None):
         b = _btn(self, icon, tip, text, checkable, name)
         if icon is not None:
-            b.setIconSize(QSize(ICON, ICON))
+            b.setIconSize(QSize(px(24), px(24)))
+            self._icon_btns.append(b)
         self.addWidget(b)
         return b
+
+    def rescale(self):
+        """Размеры кнопок под масштаб монитора (внутри ui_scale): окно перетащили на другой монитор."""
+        icon = QSize(px(24), px(24))
+        self.setIconSize(icon)
+        self.setStyleSheet(editor_css())
+        for b in self._icon_btns:
+            b.setIconSize(icon)
 
     def sync(self):
         for k, b in self.tool_btns.items():
@@ -324,8 +344,13 @@ class EditorWindow(QWidget):
         self.setPalette(pal)
         self.setAutoFillBackground(True)
 
-        self.canvas = Canvas(self, image, shapes, cfg)
-        self.bar = EditorBar(self, self.canvas)
+        # окно — на мониторе выделенной области (картинка из файла или буфера — где мышь), и размеры — под него
+        scr = (QGuiApplication.screenAt(area.center()) if area is not None else None) or \
+            QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        self.sk = Rescaler(self, screen_scale(scr), resize=False)  # картинка — в пикселях экрана, окно не тянем
+        self.canvas = Canvas(self, image, shapes, cfg, scale_for(area) if area is not None else self.sk.k)
+        with ui_scale(self.sk.k):
+            self.bar = EditorBar(self, self.canvas)
         self.canvas.bar = self.bar
         self.scroll = QScrollArea(self)
         self.scroll.setFrameShape(QFrame.NoFrame)
@@ -344,19 +369,27 @@ class EditorWindow(QWidget):
         lay.addWidget(self.bar)
         lay.addWidget(self.scroll, 1)
 
-        scr = (QGuiApplication.screenAt(area.center()) if area is not None else None) or \
-            QGuiApplication.primaryScreen()
         ag = scr.availableGeometry()
         bar = self.bar.sizeHint()
-        title_h = px(32)
+        title_h = px(32, self.sk.k)
         w = min(max(bar.width(), image.width() + 2), int(ag.width() * 0.9))
         h = min(image.height() + bar.height() + 2, int(ag.height() * 0.9) - title_h)
-        h = max(h, px(240))
-        self.setMinimumSize(px(360), px(200))
+        h = max(h, px(240, self.sk.k))
+        self.sk.fit(self._fit_ui)
         self.resize(w, h)
         self.move(ag.center().x() - w // 2, max(ag.top(), ag.center().y() - (h + title_h) // 2))
         self._fits = image.width() + 2 <= w and image.height() + bar.height() + 2 <= h
         self._title()
+
+    def _fit_ui(self):
+        self.setMinimumSize(px(360), px(200))
+        self.bar.rescale()
+        if self.fit:
+            QTimer.singleShot(0, lambda: self.fit and self._apply_zoom(self._fit_zoom()))
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.sk.follow()
 
     # ---------- показ ----------
     def present(self):
