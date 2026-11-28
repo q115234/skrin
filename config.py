@@ -6,7 +6,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 APP_NAME = "Skrin"
 SITE_URL = "https://website18.ru/skrin/"
 UPDATE_URL = SITE_URL + "latest.json"
